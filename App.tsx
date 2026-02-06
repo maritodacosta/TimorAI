@@ -1,0 +1,446 @@
+
+import React, { useState, useRef, useEffect } from 'react';
+import { generateWebsiteCode, refineWebsiteCode, bundleFilesForPreview } from './services/geminiService';
+import { PreviewFrame } from './components/PreviewFrame';
+import { Button } from './components/Button';
+import { CodeEditor } from './components/CodeEditor';
+import { FileExplorer } from './components/FileExplorer';
+import { DeveloperProfileModal } from './components/DeveloperProfileModal';
+import { PremiumModal } from './components/PremiumModal';
+import { AuthModal } from './components/AuthModal';
+import { LearnPage } from './components/LearnPage';
+import { AboutPage } from './components/AboutPage';
+import { DashboardPage } from './components/DashboardPage';
+import { PricingPage } from './components/PricingPage';
+import { AdminDashboard } from './components/AdminDashboard';
+import { ChatWidget } from './components/ChatWidget';
+import { GenerationStatus, ProjectFile, Language, User as UserType, Project } from './types';
+import { TRANSLATIONS } from './constants/translations';
+import { 
+  Globe,
+  Moon,
+  Sun,
+  Zap,
+  Command,
+  Github,
+  LogOut,
+  Save,
+  Folder,
+  RefreshCw,
+  Crown,
+  ExternalLink,
+  Rocket,
+  CheckCircle2,
+  AlertCircle
+} from 'lucide-react';
+
+const App: React.FC = () => {
+  const [activePage, setActivePage] = useState<'dashboard' | 'builder' | 'learn' | 'about' | 'pricing' | 'admin'>('dashboard');
+  const [prompt, setPrompt] = useState('');
+  const [files, setFiles] = useState<ProjectFile[]>([]);
+  const [previewHtml, setPreviewHtml] = useState<string>('');
+  const [status, setStatus] = useState<GenerationStatus>(GenerationStatus.IDLE);
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
+  const [device, setDevice] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
+  const [activeFile, setActiveFile] = useState<string | null>(null);
+  const [language, setLanguage] = useState<Language>('id'); 
+  const [isLangMenuOpen, setIsLangMenuOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [user, setUser] = useState<UserType | null>(null);
+  const [allUsers, setAllUsers] = useState<UserType[]>([]);
+  const [isPremiumModalOpen, setIsPremiumModalOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [isGithubSyncing, setIsGithubSyncing] = useState(false);
+  const [githubOwner, setGithubOwner] = useState<string>('');
+  const [syncMessage, setSyncMessage] = useState<string>('');
+  const [lastRepoUrl, setLastRepoUrl] = useState<string>('');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
+  const langMenuRef = useRef<HTMLDivElement>(null);
+  const t = TRANSLATIONS[language];
+
+  const DAILY_BUILD_LIMIT = 5;
+
+  const safeBase64 = (str: string) => {
+    try {
+      const bytes = new TextEncoder().encode(str);
+      const binString = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+      return btoa(binString);
+    } catch (e) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+  };
+
+  useEffect(() => {
+    const storedUser = localStorage.getItem('timorai_user');
+    if (storedUser) {
+        const parsedUser = JSON.parse(storedUser);
+        setUser(parsedUser);
+        if (parsedUser.role === 'admin') setActivePage('admin');
+    }
+    const storedDB = localStorage.getItem('timorai_users_db');
+    if (storedDB) setAllUsers(JSON.parse(storedDB));
+    const storedProjects = localStorage.getItem('timorai_projects_db');
+    if (storedProjects) setProjects(JSON.parse(storedProjects));
+    const savedLang = localStorage.getItem('timorai_pref_lang') as Language;
+    if (savedLang) setLanguage(savedLang);
+  }, []);
+
+  const autoSyncToGithub = async (targetFiles?: ProjectFile[]) => {
+    const filesToSync = targetFiles || files;
+    if (!user?.githubConnected || !user.githubToken || filesToSync.length === 0) return;
+    
+    setIsGithubSyncing(true);
+    setSyncMessage("Menyiapkan koneksi GitHub...");
+    const REPO_NAME = 'TimorAI-Projects';
+    const GITHUB_API = 'https://api.github.com';
+    const headers = {
+      'Authorization': `Bearer ${user.githubToken}`,
+      'Accept': 'application/vnd.github.v3+json',
+    };
+
+    try {
+      const userRes = await fetch(`${GITHUB_API}/user`, { headers });
+      if (!userRes.ok) throw new Error("Token tidak valid.");
+      const userData = await userRes.json();
+      const owner = userData.login;
+      setGithubOwner(owner);
+
+      setSyncMessage("Memverifikasi repositori...");
+      const repoRes = await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}`, { headers });
+      if (repoRes.status === 404) {
+        setSyncMessage("Membuat repositori baru...");
+        const createRes = await fetch(`${GITHUB_API}/user/repos`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            name: REPO_NAME, 
+            description: 'Websites generated by TimorAI Enterprise',
+            private: false,
+            auto_init: true
+          })
+        });
+        if (!createRes.ok) throw new Error("Gagal membuat repositori.");
+        await new Promise(r => setTimeout(r, 3000));
+      }
+
+      for (let i = 0; i < filesToSync.length; i++) {
+        const file = filesToSync[i];
+        setSyncMessage(`Sinkronisasi: ${file.name} (${i + 1}/${filesToSync.length})`);
+        
+        const fileCheck = await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}/contents/${file.name}`, { headers });
+        let sha = null;
+        if (fileCheck.status === 200) {
+          const checkData = await fileCheck.json();
+          sha = checkData.sha;
+        }
+
+        const pushRes = await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}/contents/${file.name}`, {
+          method: 'PUT',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: `TimorAI Update: ${file.name} [${new Date().toLocaleString()}]`,
+            content: safeBase64(file.content),
+            sha: sha || undefined
+          })
+        });
+
+        if (!pushRes.ok) {
+            console.error(`Gagal push ${file.name}`);
+        }
+      }
+      
+      setLastRepoUrl(`https://github.com/${owner}/${REPO_NAME}`);
+      setSyncMessage("Sinkronisasi Selesai!");
+      setTimeout(() => setSyncMessage(""), 5000);
+    } catch (error: any) {
+      setSyncMessage(`Error: ${error.message}`);
+      alert(`GitHub Error: ${error.message}`);
+    } finally {
+      setIsGithubSyncing(false);
+    }
+  };
+
+  const handleGithubConnect = async () => {
+    if (!user) { setIsAuthModalOpen(true); return; }
+    if (user.githubConnected) {
+        await autoSyncToGithub();
+        return;
+    }
+
+    const token = window.prompt(t.githubTokenPrompt);
+    if (!token) return;
+
+    setIsGithubSyncing(true);
+    try {
+      const res = await fetch('https://api.github.com/user', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error("Token tidak memiliki akses.");
+
+      const updatedUser = { ...user, githubConnected: true, githubToken: token };
+      setUser(updatedUser);
+      localStorage.setItem('timorai_user', JSON.stringify(updatedUser));
+      
+      const updatedDB = allUsers.map(u => u.id === user.id ? updatedUser : u);
+      setAllUsers(updatedDB);
+      localStorage.setItem('timorai_users_db', JSON.stringify(updatedDB));
+
+      alert(t.githubConnectSuccess);
+      if (files.length > 0) await autoSyncToGithub();
+    } catch (e: any) {
+      alert(`Error: ${e.message}`);
+    } finally {
+      setIsGithubSyncing(false);
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!user) { setIsAuthModalOpen(true); return; }
+    if (!prompt.trim()) return;
+
+    if (user.tier === 'free') {
+      const currentBuilds = user.buildsUsed || 0;
+      if (currentBuilds >= DAILY_BUILD_LIMIT) { setIsPremiumModalOpen(true); return; }
+      const updatedUser = { ...user, buildsUsed: currentBuilds + 1 };
+      setUser(updatedUser);
+      localStorage.setItem('timorai_user', JSON.stringify(updatedUser));
+    }
+
+    setStatus(GenerationStatus.LOADING);
+    try {
+      let result;
+      if (files.length > 0) result = await refineWebsiteCode(files, prompt, language);
+      else result = await generateWebsiteCode(prompt, language);
+      
+      setFiles(result.files);
+      setLanguage(result.language);
+      const rootFile = result.files.find(f => f.name === 'index.html') || result.files[0];
+      if (rootFile) {
+        setActiveFile(rootFile.name);
+        setPreviewHtml(bundleFilesForPreview(result.files));
+      }
+      setStatus(GenerationStatus.SUCCESS);
+      setPrompt('');
+      
+      if (user.githubConnected) {
+          setTimeout(() => autoSyncToGithub(result.files), 1000);
+      }
+    } catch (error) {
+      setStatus(GenerationStatus.ERROR);
+      alert(t.errorMsg);
+    }
+  };
+
+  const handleSaveProject = () => {
+    if (!user) { setIsAuthModalOpen(true); return; }
+    if (files.length === 0) return;
+
+    const nameInput = window.prompt(t.savePrompt, `Project ${new Date().toLocaleDateString()}`);
+    if (!nameInput) return;
+
+    const newProject: Project = {
+      id: currentProjectId || Date.now().toString(),
+      userId: user.id,
+      name: nameInput,
+      files: files,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    const updatedProjects = [...projects.filter(p => p.id !== newProject.id), newProject];
+    setProjects(updatedProjects);
+    setCurrentProjectId(newProject.id);
+    localStorage.setItem('timorai_projects_db', JSON.stringify(updatedProjects));
+    alert(t.saveSuccess);
+    
+    if (user.githubConnected) autoSyncToGithub();
+  };
+
+  const handleLogout = () => { setUser(null); localStorage.removeItem('timorai_user'); setActivePage('dashboard'); };
+  const handleLanguageChange = (l: Language) => { setLanguage(l); localStorage.setItem('timorai_pref_lang', l); setIsLangMenuOpen(false); };
+
+  const renderActivePage = () => {
+    if (activePage === 'admin' && user?.role === 'admin') return <AdminDashboard language={language} users={allUsers} onUpdateUser={()=>{}} onDeleteUser={()=>{}} onLogout={handleLogout} />;
+    switch (activePage) {
+      case 'dashboard': return <DashboardPage language={language} onNavigate={(p: any) => setActivePage(p)} />;
+      case 'learn': return <LearnPage language={language} />;
+      case 'about': return <AboutPage language={language} />;
+      case 'pricing': return <PricingPage language={language} isLoggedIn={!!user} onUpgrade={() => setIsPremiumModalOpen(true)} onLoginRequest={() => setIsAuthModalOpen(true)} />;
+      case 'builder':
+      default: return (
+        <main className="flex-1 flex flex-col md:flex-row h-full overflow-hidden relative">
+          <div className={`bg-white dark:bg-[#020617] border-r border-gray-200 dark:border-white/5 transition-all duration-300 ${isSidebarOpen ? 'w-full md:w-[450px]' : 'w-0 overflow-hidden'}`}>
+            <div className="p-8 h-full flex flex-col overflow-y-auto">
+              <h1 className="text-3xl font-bold mb-4">{t.heroTitle}</h1>
+              <p className="text-slate-500 mb-8">{t.heroDesc}</p>
+              
+              <div className="bg-slate-50 dark:bg-white/5 p-4 rounded-2xl mb-6 shadow-inner border border-gray-100 dark:border-white/5">
+                <textarea 
+                  value={prompt} 
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={t.placeholderIdle}
+                  className="w-full bg-transparent resize-none focus:outline-none min-h-[150px] text-sm text-slate-800 dark:text-slate-200"
+                />
+                <div className="flex justify-end mt-2">
+                  <Button onClick={handleGenerate} isLoading={status === GenerationStatus.LOADING} disabled={!prompt.trim()}>
+                    {t.btnGenerate} <Zap className="w-4 h-4 ml-2 fill-current" />
+                  </Button>
+                </div>
+              </div>
+
+              {projects.length > 0 && (
+                <div className="space-y-3">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-2">{t.projectsTitle}</p>
+                  <div className="space-y-2">
+                    {projects.filter(p => p.userId === user?.id).map(p => (
+                      <div key={p.id} onClick={() => { setFiles(p.files); setCurrentProjectId(p.id); setPreviewHtml(bundleFilesForPreview(p.files)); }} className={`p-4 bg-white dark:bg-white/5 border rounded-xl cursor-pointer transition-all hover:border-indigo-500/50 ${currentProjectId === p.id ? 'border-indigo-500 ring-1 ring-indigo-500/20' : 'border-gray-100 dark:border-white/5'}`}>
+                        <div className="flex items-center gap-3">
+                          <Folder className="w-4 h-4 text-indigo-500" />
+                          <p className="font-bold text-sm truncate">{p.name}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {user?.githubConnected && lastRepoUrl && (
+                <div className="mt-8 p-6 bg-gradient-to-br from-indigo-600 to-violet-700 rounded-2xl text-white shadow-xl">
+                   <div className="flex items-center gap-3 mb-4">
+                     <Rocket className="w-5 h-5 animate-bounce" />
+                     <h3 className="font-bold">Deploy Mahakarya Anda</h3>
+                   </div>
+                   <p className="text-xs text-indigo-100 mb-6 leading-relaxed">Proyek Anda sudah sinkron dengan GitHub. Sekarang saatnya go-live dengan domain profesional di Vercel.</p>
+                   <div className="space-y-3">
+                     <a href={`https://vercel.com/new/clone?repository-url=${lastRepoUrl}`} target="_blank" className="w-full py-3 bg-white text-indigo-600 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors">
+                       Deploy to Vercel <ExternalLink className="w-4 h-4" />
+                     </a>
+                     <a href={lastRepoUrl} target="_blank" className="w-full py-3 bg-white/10 text-white border border-white/20 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-white/20 transition-colors">
+                       Halaman GitHub <Github className="w-4 h-4" />
+                     </a>
+                   </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex-1 flex flex-col bg-slate-50 dark:bg-black overflow-hidden relative">
+            {syncMessage && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md px-6 py-3 rounded-full shadow-2xl border border-indigo-500/30 flex items-center gap-3 animate-in slide-in-from-top-4">
+                {isGithubSyncing ? <RefreshCw className="w-4 h-4 text-indigo-500 animate-spin" /> : <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                <span className="text-xs font-bold text-slate-700 dark:text-white">{syncMessage}</span>
+              </div>
+            )}
+            
+            <div className="h-14 border-b border-gray-200 dark:border-white/5 bg-white dark:bg-[#020617] flex items-center justify-between px-6 z-20">
+              <div className="flex gap-4">
+                <button onClick={() => setViewMode('preview')} className={`text-xs font-bold uppercase tracking-wider ${viewMode === 'preview' ? 'text-indigo-600 border-b-2 border-indigo-600 pb-4 mt-4' : 'text-slate-400'}`}>{t.tabPreview}</button>
+                <button onClick={() => setViewMode('code')} className={`text-xs font-bold uppercase tracking-wider ${viewMode === 'code' ? 'text-indigo-600 border-b-2 border-indigo-600 pb-4 mt-4' : 'text-slate-400'}`}>{t.tabEditor}</button>
+              </div>
+              <div className="flex items-center gap-3">
+                {files.length > 0 && (
+                  <>
+                    <Button variant="ghost" onClick={handleGithubConnect} isLoading={isGithubSyncing} className={`h-9 px-4 rounded-lg ${user?.githubConnected ? 'text-emerald-500 bg-emerald-500/5' : ''}`}>
+                      <Github className="w-4 h-4 mr-2" /> {user?.githubConnected ? t.btnGithubConnected : t.btnGithub}
+                    </Button>
+                    <Button variant="secondary" onClick={handleSaveProject} className="h-9 px-4 rounded-lg"><Save className="w-4 h-4 mr-2" /> {t.btnSave}</Button>
+                  </>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex-1 relative">
+              {viewMode === 'preview' ? (
+                <div className="w-full h-full p-4 flex justify-center bg-slate-100/50 dark:bg-black/40">
+                  <PreviewFrame html={previewHtml} title="TimorAI Preview" device={device} />
+                </div>
+              ) : (
+                <div className="flex h-full">
+                  <FileExplorer files={files} activeFile={activeFile} onSelectFile={(name) => { setActiveFile(name); }} title="Project Explorer" />
+                  <div className="flex-1 h-full overflow-hidden">
+                    <CodeEditor code={files.find(f => f.name === activeFile)?.content || ''} />
+                  </div>
+                </div>
+              )}
+              
+              {status === GenerationStatus.LOADING && (
+                <div className="absolute inset-0 bg-white/90 dark:bg-[#020617]/90 backdrop-blur-xl flex flex-col items-center justify-center z-50">
+                  <div className="w-16 h-16 relative mb-6">
+                    <RefreshCw className="w-full h-full text-indigo-500 animate-spin" />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <Zap className="w-6 h-6 text-indigo-500 fill-current animate-pulse" />
+                    </div>
+                  </div>
+                  <p className="text-xl font-display font-bold text-slate-900 dark:text-white mb-2">{t.statusBuilding}</p>
+                  <p className="text-sm text-slate-500 animate-pulse">{t.statusBuildingDesc}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </main>
+      );
+    }
+  };
+
+  return (
+    <div className={`min-h-screen flex flex-col ${theme === 'dark' ? 'dark bg-[#020617] text-white' : 'bg-[#f8fafc] text-slate-900'}`}>
+      <nav className="h-16 border-b border-gray-200 dark:border-white/5 flex items-center justify-between px-6 sticky top-0 bg-white/80 dark:bg-[#020617]/80 backdrop-blur-xl z-[60]">
+        <div className="flex items-center gap-6">
+          <div onClick={() => setActivePage('dashboard')} className="flex items-center gap-3 cursor-pointer group">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
+              <Command className="w-6 h-6 text-white" />
+            </div>
+            <div className="flex flex-col">
+              <span className="text-xl font-display font-bold tracking-tight">Timor<span className="text-indigo-600 dark:text-indigo-400">AI</span></span>
+              <span className="text-[8px] font-bold uppercase tracking-[0.2em] opacity-60">Enterprise</span>
+            </div>
+          </div>
+          <div className="hidden lg:flex gap-1 bg-slate-100 dark:bg-white/5 p-1 rounded-full border border-gray-200 dark:border-white/5">
+            <button onClick={() => setActivePage('dashboard')} className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${activePage === 'dashboard' ? 'bg-white dark:bg-white/10 text-indigo-600 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}>{t.navDashboard}</button>
+            <button onClick={() => setActivePage('builder')} className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${activePage === 'builder' ? 'bg-white dark:bg-white/10 text-indigo-600 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}>{t.navBuilder}</button>
+            <button onClick={() => setActivePage('learn')} className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${activePage === 'learn' ? 'bg-white dark:bg-white/10 text-indigo-600 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}>{t.navLearn}</button>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="relative" ref={langMenuRef}>
+            <button onClick={() => setIsLangMenuOpen(!isLangMenuOpen)} className="p-2.5 bg-slate-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl flex items-center gap-2 text-[10px] font-bold uppercase">
+              <Globe className="w-4 h-4 text-indigo-500" /> <span className="hidden sm:inline">{language}</span>
+            </button>
+            {isLangMenuOpen && (
+              <div className="absolute top-full right-0 mt-2 bg-white dark:bg-[#0f172a] border border-gray-200 dark:border-white/10 rounded-2xl shadow-2xl p-2 w-40 animate-in slide-in-from-top-2 duration-200">
+                {['id','tet','en','pt'].map(l => (
+                  <button key={l} onClick={() => handleLanguageChange(l as Language)} className={`w-full text-left px-4 py-2.5 text-xs font-bold uppercase rounded-xl transition-colors ${language === l ? 'bg-indigo-500 text-white' : 'hover:bg-indigo-50 dark:hover:bg-white/5 text-slate-600 dark:text-slate-400'}`}>{l}</button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-white/5 text-slate-500 dark:text-slate-400 transition-colors">
+            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          </button>
+          <div className="h-6 w-px bg-gray-200 dark:bg-white/10 mx-1"></div>
+          {user ? (
+            <div className="flex items-center gap-3 pl-2">
+              <div className="relative group cursor-pointer">
+                <img src={user.avatar} className="w-9 h-9 rounded-full border-2 border-indigo-500/30 p-0.5 hover:border-indigo-500 transition-colors" />
+                {user.tier === 'premium' && <div className="absolute -top-1 -right-1 bg-amber-500 rounded-full p-0.5"><Crown className="w-2.5 h-2.5 text-white" /></div>}
+              </div>
+              <button onClick={handleLogout} className="p-2.5 text-slate-400 hover:text-red-500 transition-colors"><LogOut className="w-5 h-5" /></button>
+            </div>
+          ) : (
+            <Button onClick={() => setIsAuthModalOpen(true)} className="px-6 py-2.5 rounded-full text-xs font-bold uppercase shadow-indigo-600/20">{t.navLogin}</Button>
+          )}
+        </div>
+      </nav>
+      <div className="flex-1 overflow-hidden">{renderActivePage()}</div>
+      <ChatWidget language={language} />
+      <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} onLogin={(u) => { setUser(u); localStorage.setItem('timorai_user', JSON.stringify(u)); }} language={language} />
+      <PremiumModal isOpen={isPremiumModalOpen} onClose={() => setIsPremiumModalOpen(false)} onUpgrade={() => { if(user) { const u = {...user, tier: 'premium' as const}; setUser(u); localStorage.setItem('timorai_user', JSON.stringify(u)); } setIsPremiumModalOpen(false); }} language={language} />
+      <DeveloperProfileModal isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} language={language} />
+    </div>
+  );
+};
+
+export default App;

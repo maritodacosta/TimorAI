@@ -1,0 +1,5 @@
+{
+  "name": "TimorAI",
+  "description": "Platform pembuat website AI tanpa koding. Cukup deskripsikan ide Anda, dan TimorAI akan membangun website full-stack (frontend + simulasi backend) dalam hitungan detik.",
+  "requestFramePermissions": []
+}
