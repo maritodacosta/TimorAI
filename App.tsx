@@ -216,11 +216,12 @@ const App: React.FC = () => {
       setStatus(GenerationStatus.SUCCESS);
       setPrompt('');
       if (user.githubConnected) setTimeout(() => autoSyncToGithub(result.files), 500);
-    } catch (error) {
+    } catch (error: any) {
       setStatus(GenerationStatus.ERROR);
-      alert(t.errorMsg);
+      // Show specific error message if available
+      alert(error.message || t.errorMsg);
     } finally {
-      if (status === GenerationStatus.LOADING) setStatus(GenerationStatus.IDLE);
+      setStatus(GenerationStatus.IDLE);
     }
   };
 
