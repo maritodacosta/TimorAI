@@ -2,11 +2,16 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ProjectFile, Language, ChatMessage } from "../types";
 
+/**
+ * Optimized model rotation.
+ * 403 errors often happen because of regional restrictions or API key limitations.
+ * We rotate through the most stable available models.
+ */
 const MODEL_ROTATION = [
-  'gemini-flash-latest',
-  'gemini-3-flash-preview', 
-  'gemini-2.0-flash-exp', 
-  'gemini-2.5-flash-lite-latest'
+  'gemini-flash-latest',       // Most stable, high availability
+  'gemini-flash-lite-latest',  // Lightweight fallback
+  'gemini-3-flash-preview',    // Advanced logic (may require specific permissions)
+  'gemini-3-pro-preview'       // Enterprise logic
 ];
 
 const SYSTEM_INSTRUCTION = `
@@ -41,24 +46,50 @@ async function executeWithSmartFallback<T>(
   operationName: string,
   fn: (modelName: string) => Promise<T>
 ): Promise<T> {
+  const apiKey = process.env.API_KEY;
+  
+  if (!apiKey || apiKey === "undefined" || apiKey === "" || apiKey.includes("YOUR_API_KEY")) {
+    console.error(`[TimorAI] Critical: API_KEY is missing or invalid.`);
+    throw new Error("API Key tidak ditemukan. Harap atur API_KEY di Environment Variables Vercel.");
+  }
+
   let lastError: any;
+  let attempt = 0;
+
   for (const model of MODEL_ROTATION) {
+    attempt++;
     try {
-      console.log(`[TimorAI] Attempting ${operationName} with model: ${model}`);
+      console.log(`[TimorAI] ${operationName} -> Attempting ${model}...`);
       return await fn(model);
     } catch (error: any) {
       lastError = error;
-      const status = error?.status || error?.code || 'Unknown';
-      console.error(`[TimorAI] Error with ${model}: ${status}`, error);
+      const status = error?.status || error?.code;
       
-      if (status === 429 || status === 503 || status === 500) {
-        await delay(1500);
+      console.error(`[TimorAI] Model ${model} failed with status: ${status}`);
+
+      // 403 Forbidden: The key is valid but doesn't have permission for this model or API
+      if (status === 403 || (error.message && error.message.includes("403"))) {
+        console.warn(`[TimorAI] 403 PERMISSION_DENIED on ${model}. Checking next model...`);
+        // If it's a 403 on the last model, we need to throw a helpful error
+        if (attempt === MODEL_ROTATION.length) {
+          throw new Error("ERROR 403: API Key Anda tidak memiliki izin. Pastikan 'Generative Language API' sudah diaktifkan di Google Cloud Console atau gunakan API Key baru dari Google AI Studio.");
+        }
         continue;
       }
-      // If it's a 404 or 401, we try the next model immediately
+
+      // 429 Quota Exceeded
+      if (status === 429) {
+        console.warn(`[TimorAI] 429 Rate Limit hit. Waiting before fallback...`);
+        await delay(attempt * 2000);
+        continue;
+      }
+
+      // If other error, wait a bit and try next model
+      await delay(500);
     }
   }
-  throw lastError || new Error("Connection failed after trying all available models.");
+
+  throw lastError || new Error("Gagal terhubung ke layanan AI. Silakan periksa koneksi internet atau API Key Anda.");
 }
 
 export const generateWebsiteCode = async (prompt: string, currentLanguage: Language = 'id'): Promise<any> => {
@@ -70,6 +101,7 @@ export const generateWebsiteCode = async (prompt: string, currentLanguage: Langu
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: "application/json",
+        temperature: 0.7,
       },
     });
     const parsed = JSON.parse(response.text.trim());
@@ -87,6 +119,7 @@ export const refineWebsiteCode = async (currentFiles: ProjectFile[], refinementP
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: "application/json",
+        temperature: 0.5,
       }
     });
     const parsed = JSON.parse(response.text.trim());
@@ -98,16 +131,24 @@ export const chatWithTimorAI = async (message: string, history: ChatMessage[]): 
   return executeWithSmartFallback('chatWithTimorAI', async (model) => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
     
-    // Ensure history is alternating and doesn't start with model
-    const validHistory = history.filter(h => h.role === 'user' || h.role === 'model');
+    const validHistory = [];
+    let expectedRole: 'user' | 'model' = 'user';
     
+    for (const h of history) {
+      const role = h.role === 'user' ? 'user' : 'model';
+      if (role === expectedRole) {
+        validHistory.push({ role: role, parts: [{ text: h.text }] });
+        expectedRole = expectedRole === 'user' ? 'model' : 'user';
+      }
+    }
+
     const chat = ai.chats.create({
       model: model,
-      history: validHistory.map(h => ({ 
-        role: h.role === 'user' ? 'user' : 'model', 
-        parts: [{text: h.text}] 
-      })),
-      config: { systemInstruction: CHAT_SYSTEM_INSTRUCTION }
+      history: validHistory,
+      config: { 
+        systemInstruction: CHAT_SYSTEM_INSTRUCTION,
+        temperature: 0.8
+      }
     });
     const result = await chat.sendMessage({ message });
     return result.text;
@@ -118,50 +159,39 @@ export const learnWithTimorAI = async (message: string, language: Language, hist
   return executeWithSmartFallback('learnWithTimorAI', async (model) => {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
     
-    // Cleanup history to ensure alternating turns (Gemini Requirement)
     const validHistory = [];
-    let lastRole = null;
+    let expectedRole: 'user' | 'model' = 'user';
     for (const h of historyContext) {
-      const currentRole = h.role === 'user' ? 'user' : 'model';
-      if (currentRole !== lastRole) {
-        validHistory.push({ role: currentRole, parts: [{ text: h.text }] });
-        lastRole = currentRole;
+      const role = h.role === 'user' ? 'user' : 'model';
+      if (role === expectedRole) {
+        validHistory.push({ role: role, parts: [{ text: h.text }] });
+        expectedRole = expectedRole === 'user' ? 'model' : 'user';
       }
     }
 
-    const response = await ai.models.generateContent({
+    if (validHistory.length > 0 && validHistory[validHistory.length - 1].role === 'user') {
+      validHistory.pop();
+    }
+
+    const chat = ai.chats.create({
       model: model,
-      contents: { parts: [...validHistory.map(h => h.parts[0]), { text: message }] },
+      history: validHistory,
       config: {
         systemInstruction: LEARN_SYSTEM_INSTRUCTION + `\n\n${getLanguageContext(language)}`,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            chatResponse: {
-              type: Type.STRING,
-              description: "A short, encouraging chat response."
-            },
-            boardContent: {
-              type: Type.STRING,
-              description: "Detailed knowledge content in Markdown format."
-            }
+            chatResponse: { type: Type.STRING },
+            boardContent: { type: Type.STRING }
           },
           required: ["chatResponse", "boardContent"]
         }
       },
     });
 
-    const text = response.text.trim();
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      console.warn("[TimorAI] JSON Parse failed, attempting raw recovery", text);
-      return {
-        chatResponse: "Materi telah diperbarui.",
-        boardContent: text
-      };
-    }
+    const result = await chat.sendMessage({ message });
+    return JSON.parse(result.text.trim());
   });
 };
 
