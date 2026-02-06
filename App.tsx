@@ -31,7 +31,8 @@ import {
   ExternalLink,
   Rocket,
   CheckCircle2,
-  AlertCircle
+  Menu,
+  X
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -45,6 +46,7 @@ const App: React.FC = () => {
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [language, setLanguage] = useState<Language>('id'); 
   const [isLangMenuOpen, setIsLangMenuOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [user, setUser] = useState<UserType | null>(null);
   const [allUsers, setAllUsers] = useState<UserType[]>([]);
@@ -62,7 +64,7 @@ const App: React.FC = () => {
   const langMenuRef = useRef<HTMLDivElement>(null);
   const t = TRANSLATIONS[language];
 
-  const DAILY_BUILD_LIMIT = 100; // Unlock for enterprise user
+  const DAILY_BUILD_LIMIT = 100; 
 
   const safeBase64 = (str: string) => {
     try {
@@ -104,15 +106,14 @@ const App: React.FC = () => {
 
     try {
       const userRes = await fetch(`${GITHUB_API}/user`, { headers });
-      if (!userRes.ok) throw new Error("Token GitHub tidak valid atau telah kedaluwarsa.");
+      if (!userRes.ok) throw new Error("Token GitHub tidak valid.");
       const userData = await userRes.json();
       const owner = userData.login;
       setGithubOwner(owner);
 
-      // Cek Repositori
       const repoRes = await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}`, { headers });
       if (repoRes.status === 404) {
-        setSyncMessage("Membuat Repositori Baru...");
+        setSyncMessage("Membuat Repositori...");
         const createRes = await fetch(`${GITHUB_API}/user/repos`, {
           method: 'POST',
           headers: { ...headers, 'Content-Type': 'application/json' },
@@ -123,14 +124,12 @@ const App: React.FC = () => {
             auto_init: true
           })
         });
-        if (!createRes.ok) throw new Error("Gagal membuat repositori GitHub.");
+        if (!createRes.ok) throw new Error("Gagal membuat repositori.");
         await new Promise(r => setTimeout(r, 2000));
       }
 
-      // Sync semua file
       for (const file of filesToSync) {
-        setSyncMessage(`Mengunggah: ${file.name}...`);
-        
+        setSyncMessage(`Push: ${file.name}...`);
         const fileCheck = await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}/contents/${file.name}`, { headers });
         let sha = null;
         if (fileCheck.status === 200) {
@@ -142,13 +141,11 @@ const App: React.FC = () => {
           method: 'PUT',
           headers: { ...headers, 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            message: `Update dari TimorAI: ${file.name}`,
+            message: `Update TimorAI: ${file.name}`,
             content: safeBase64(file.content),
             sha: sha || undefined
           })
         });
-
-        if (!pushRes.ok) console.error(`Gagal sinkron file: ${file.name}`);
       }
       
       const repoUrl = `https://github.com/${owner}/${REPO_NAME}`;
@@ -157,7 +154,6 @@ const App: React.FC = () => {
       setTimeout(() => setSyncMessage(""), 4000);
     } catch (error: any) {
       setSyncMessage(`Error: ${error.message}`);
-      console.error(error);
     } finally {
       setIsGithubSyncing(false);
     }
@@ -165,31 +161,23 @@ const App: React.FC = () => {
 
   const handleGithubConnect = async () => {
     if (!user) { setIsAuthModalOpen(true); return; }
-    
-    // Jika sudah konek, picu sinkronisasi manual
     if (user.githubConnected) {
         await autoSyncToGithub();
         return;
     }
-
     const token = window.prompt("Masukkan GitHub Personal Access Token Anda:", user.githubToken || "");
     if (!token) return;
-
     setIsGithubSyncing(true);
     try {
-      const res = await fetch('https://api.github.com/user', {
-        headers: { 'Authorization': `token ${token}` }
-      });
-      if (!res.ok) throw new Error("Token salah atau tidak memiliki akses repo.");
-
+      const res = await fetch('https://api.github.com/user', { headers: { 'Authorization': `token ${token}` } });
+      if (!res.ok) throw new Error("Token salah.");
       const updatedUser = { ...user, githubConnected: true, githubToken: token, tier: 'premium' as const };
       setUser(updatedUser);
       localStorage.setItem('timorai_user', JSON.stringify(updatedUser));
-      
-      alert("GitHub Berhasil Terhubung! TimorAI sekarang akan mensinkronkan semua proyek Anda.");
+      alert("GitHub Berhasil Terhubung!");
       if (files.length > 0) await autoSyncToGithub();
     } catch (e: any) {
-      alert(`GitHub Connect Error: ${e.message}`);
+      alert(`Error: ${e.message}`);
     } finally {
       setIsGithubSyncing(false);
     }
@@ -198,13 +186,11 @@ const App: React.FC = () => {
   const handleGenerate = async () => {
     if (!user) { setIsAuthModalOpen(true); return; }
     if (!prompt.trim()) return;
-
     setStatus(GenerationStatus.LOADING);
     try {
       let result;
       if (files.length > 0) result = await refineWebsiteCode(files, prompt, language);
       else result = await generateWebsiteCode(prompt, language);
-      
       setFiles(result.files);
       setLanguage(result.language);
       const rootFile = result.files.find(f => f.name === 'index.html') || result.files[0];
@@ -214,11 +200,7 @@ const App: React.FC = () => {
       }
       setStatus(GenerationStatus.SUCCESS);
       setPrompt('');
-      
-      // AUTO SYNC KE GITHUB SETELAH GENERATE
-      if (user.githubConnected) {
-          setTimeout(() => autoSyncToGithub(result.files), 500);
-      }
+      if (user.githubConnected) setTimeout(() => autoSyncToGithub(result.files), 500);
     } catch (error) {
       setStatus(GenerationStatus.ERROR);
       alert(t.errorMsg);
@@ -230,10 +212,8 @@ const App: React.FC = () => {
   const handleSaveProject = () => {
     if (!user) { setIsAuthModalOpen(true); return; }
     if (files.length === 0) return;
-
     const nameInput = window.prompt(t.savePrompt, `Website ${new Date().toLocaleDateString()}`);
     if (!nameInput) return;
-
     const newProject: Project = {
       id: currentProjectId || Date.now().toString(),
       userId: user.id,
@@ -246,7 +226,6 @@ const App: React.FC = () => {
     setProjects(updatedProjects);
     setCurrentProjectId(newProject.id);
     localStorage.setItem('timorai_projects_db', JSON.stringify(updatedProjects));
-    
     if (user.githubConnected) autoSyncToGithub();
     else alert(t.saveSuccess);
   };
@@ -268,7 +247,6 @@ const App: React.FC = () => {
             <div className="p-8 h-full flex flex-col overflow-y-auto">
               <h1 className="text-3xl font-bold mb-4">{t.heroTitle}</h1>
               <p className="text-slate-500 mb-8">{t.heroDesc}</p>
-              
               <div className="bg-slate-50 dark:bg-white/5 p-4 rounded-2xl mb-6 shadow-inner border border-gray-100 dark:border-white/5">
                 <textarea 
                   value={prompt} 
@@ -282,7 +260,6 @@ const App: React.FC = () => {
                   </Button>
                 </div>
               </div>
-
               {projects.length > 0 && (
                 <div className="space-y-3">
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-2">{t.projectsTitle}</p>
@@ -298,27 +275,18 @@ const App: React.FC = () => {
                   </div>
                 </div>
               )}
-              
               {user?.githubConnected && (
                 <div className="mt-8 p-6 bg-gradient-to-br from-indigo-600 to-violet-700 rounded-2xl text-white shadow-xl">
-                   <div className="flex items-center gap-3 mb-4">
-                     <Rocket className="w-5 h-5 animate-bounce" />
-                     <h3 className="font-bold">Luncurkan ke Vercel</h3>
-                   </div>
-                   <p className="text-xs text-indigo-100 mb-6 leading-relaxed">Website Anda siap dionlinekan dengan domain profesional. Klik tombol di bawah untuk deploy ke Vercel.</p>
+                   <div className="flex items-center gap-3 mb-4"><Rocket className="w-5 h-5 animate-bounce" /><h3 className="font-bold">Luncurkan ke Vercel</h3></div>
+                   <p className="text-xs text-indigo-100 mb-6 leading-relaxed">Website Anda siap dionlinekan dengan domain profesional.</p>
                    <div className="space-y-3">
-                     <a href={`https://vercel.com/new/clone?repository-url=${lastRepoUrl || `https://github.com/${githubOwner}/TimorAI-Projects`}`} target="_blank" className="w-full py-3 bg-white text-indigo-600 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors">
-                       Deploy to Vercel <ExternalLink className="w-4 h-4" />
-                     </a>
-                     <button onClick={() => autoSyncToGithub()} className="w-full py-3 bg-white/10 text-white border border-white/20 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-white/20 transition-colors">
-                       Push Update Sekarang <Github className="w-4 h-4" />
-                     </button>
+                     <a href={`https://vercel.com/new/clone?repository-url=${lastRepoUrl || `https://github.com/${githubOwner}/TimorAI-Projects`}`} target="_blank" className="w-full py-3 bg-white text-indigo-600 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors">Deploy to Vercel <ExternalLink className="w-4 h-4" /></a>
+                     <button onClick={() => autoSyncToGithub()} className="w-full py-3 bg-white/10 text-white border border-white/20 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-white/20 transition-colors">Push Update Sekarang <Github className="w-4 h-4" /></button>
                    </div>
                 </div>
               )}
             </div>
           </div>
-
           <div className="flex-1 flex flex-col bg-slate-50 dark:bg-black overflow-hidden relative">
             {syncMessage && (
               <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] bg-white dark:bg-slate-900 px-6 py-3 rounded-full shadow-2xl border border-indigo-500/30 flex items-center gap-3 animate-in slide-in-from-top-4">
@@ -326,7 +294,6 @@ const App: React.FC = () => {
                 <span className="text-xs font-bold text-slate-700 dark:text-white uppercase tracking-wider">{syncMessage}</span>
               </div>
             )}
-            
             <div className="h-14 border-b border-gray-200 dark:border-white/5 bg-white dark:bg-[#020617] flex items-center justify-between px-6 z-20">
               <div className="flex gap-4">
                 <button onClick={() => setViewMode('preview')} className={`text-xs font-bold uppercase tracking-wider ${viewMode === 'preview' ? 'text-indigo-600 border-b-2 border-indigo-600 pb-4 mt-4' : 'text-slate-400'}`}>{t.tabPreview}</button>
@@ -335,39 +302,25 @@ const App: React.FC = () => {
               <div className="flex items-center gap-3">
                 {files.length > 0 && (
                   <>
-                    <Button variant="ghost" onClick={handleGithubConnect} isLoading={isGithubSyncing} className={`h-9 px-4 rounded-lg ${user?.githubConnected ? 'text-emerald-500 bg-emerald-500/5' : ''}`}>
-                      <Github className="w-4 h-4 mr-2" /> {user?.githubConnected ? "GitHub Linked" : "Sync GitHub"}
-                    </Button>
+                    <Button variant="ghost" onClick={handleGithubConnect} isLoading={isGithubSyncing} className={`h-9 px-4 rounded-lg ${user?.githubConnected ? 'text-emerald-500 bg-emerald-500/5' : ''}`}><Github className="w-4 h-4 mr-2" /> {user?.githubConnected ? "Linked" : "Sync"}</Button>
                     <Button variant="secondary" onClick={handleSaveProject} className="h-9 px-4 rounded-lg"><Save className="w-4 h-4 mr-2" /> {t.btnSave}</Button>
                   </>
                 )}
               </div>
             </div>
-            
             <div className="flex-1 relative">
               {viewMode === 'preview' ? (
-                <div className="w-full h-full p-4 flex justify-center bg-slate-100/50 dark:bg-black/40">
-                  <PreviewFrame html={previewHtml} title="TimorAI Preview" device={device} />
-                </div>
+                <div className="w-full h-full p-4 flex justify-center bg-slate-100/50 dark:bg-black/40"><PreviewFrame html={previewHtml} title="TimorAI Preview" device={device} /></div>
               ) : (
                 <div className="flex h-full">
                   <FileExplorer files={files} activeFile={activeFile} onSelectFile={(name) => { setActiveFile(name); }} title="Project Files" />
-                  <div className="flex-1 h-full overflow-hidden">
-                    <CodeEditor code={files.find(f => f.name === activeFile)?.content || ''} />
-                  </div>
+                  <div className="flex-1 h-full overflow-hidden"><CodeEditor code={files.find(f => f.name === activeFile)?.content || ''} /></div>
                 </div>
               )}
-              
               {status === GenerationStatus.LOADING && (
                 <div className="absolute inset-0 bg-white/95 dark:bg-[#020617]/95 backdrop-blur-xl flex flex-col items-center justify-center z-50">
-                  <div className="w-16 h-16 relative mb-6">
-                    <RefreshCw className="w-full h-full text-indigo-500 animate-spin" />
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <Zap className="w-6 h-6 text-indigo-500 fill-current animate-pulse" />
-                    </div>
-                  </div>
+                  <div className="w-16 h-16 relative mb-6"><RefreshCw className="w-full h-full text-indigo-500 animate-spin" /><div className="absolute inset-0 flex items-center justify-center"><Zap className="w-6 h-6 text-indigo-500 fill-current animate-pulse" /></div></div>
                   <p className="text-xl font-display font-bold text-slate-900 dark:text-white mb-2">Membangun Mahakarya...</p>
-                  <p className="text-sm text-slate-500 animate-pulse">Menghubungkan kecerdasan buatan ke server GitHub Anda.</p>
                 </div>
               )}
             </div>
@@ -379,26 +332,36 @@ const App: React.FC = () => {
 
   return (
     <div className={`min-h-screen flex flex-col ${theme === 'dark' ? 'dark bg-[#020617] text-white' : 'bg-[#f8fafc] text-slate-900'}`}>
-      <nav className="h-16 border-b border-gray-200 dark:border-white/5 flex items-center justify-between px-6 sticky top-0 bg-white/80 dark:bg-[#020617]/80 backdrop-blur-xl z-[60]">
-        <div className="flex items-center gap-6">
-          <div onClick={() => setActivePage('dashboard')} className="flex items-center gap-3 cursor-pointer group">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
-              <Command className="w-6 h-6 text-white" />
+      <nav className="h-16 border-b border-gray-200 dark:border-white/5 flex items-center justify-between px-4 md:px-6 sticky top-0 bg-white/80 dark:bg-[#020617]/80 backdrop-blur-xl z-[60]">
+        <div className="flex items-center gap-3 md:gap-6">
+          {/* Mobile Menu Toggle */}
+          <button 
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            className="p-2 lg:hidden text-slate-500 hover:text-indigo-600 transition-colors"
+          >
+            <Menu className="w-6 h-6" />
+          </button>
+
+          <div onClick={() => setActivePage('dashboard')} className="flex items-center gap-2 md:gap-3 cursor-pointer group">
+            <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center shadow-lg group-hover:scale-105 transition-transform">
+              <Command className="w-5 h-5 md:w-6 md:h-6 text-white" />
             </div>
             <div className="flex flex-col">
-              <span className="text-xl font-display font-bold tracking-tight">Timor<span className="text-indigo-600 dark:text-indigo-400">AI</span></span>
-              <span className="text-[8px] font-bold uppercase tracking-[0.2em] opacity-60">Enterprise</span>
+              <span className="text-lg md:text-xl font-display font-bold tracking-tight">Timor<span className="text-indigo-600 dark:text-indigo-400">AI</span></span>
+              <span className="text-[10px] md:text-[8px] font-bold uppercase tracking-[0.2em] opacity-60">Enterprise</span>
             </div>
           </div>
+
           <div className="hidden lg:flex gap-1 bg-slate-100 dark:bg-white/5 p-1 rounded-full border border-gray-200 dark:border-white/5">
             <button onClick={() => setActivePage('dashboard')} className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${activePage === 'dashboard' ? 'bg-white dark:bg-white/10 text-indigo-600 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}>{t.navDashboard}</button>
             <button onClick={() => setActivePage('builder')} className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${activePage === 'builder' ? 'bg-white dark:bg-white/10 text-indigo-600 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}>{t.navBuilder}</button>
             <button onClick={() => setActivePage('learn')} className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${activePage === 'learn' ? 'bg-white dark:bg-white/10 text-indigo-600 dark:text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}`}>{t.navLearn}</button>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+
+        <div className="flex items-center gap-2 md:gap-3">
           <div className="relative" ref={langMenuRef}>
-            <button onClick={() => setIsLangMenuOpen(!isLangMenuOpen)} className="p-2.5 bg-slate-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl flex items-center gap-2 text-[10px] font-bold uppercase">
+            <button onClick={() => setIsLangMenuOpen(!isLangMenuOpen)} className="p-2 md:p-2.5 bg-slate-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl flex items-center gap-2 text-[10px] font-bold uppercase">
               <Globe className="w-4 h-4 text-indigo-500" /> <span className="hidden sm:inline">{language}</span>
             </button>
             {isLangMenuOpen && (
@@ -409,28 +372,58 @@ const App: React.FC = () => {
               </div>
             )}
           </div>
-          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-white/5 text-slate-500 dark:text-slate-400 transition-colors">
+          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-2 md:p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-white/5 text-slate-500 dark:text-slate-400 transition-colors">
             {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
-          <div className="h-6 w-px bg-gray-200 dark:bg-white/10 mx-1"></div>
           {user ? (
-            <div className="flex items-center gap-3 pl-2">
-              <div className="relative group cursor-pointer">
-                <img src={user.avatar} className="w-9 h-9 rounded-full border-2 border-indigo-500/30 p-0.5 hover:border-indigo-500 transition-colors" />
-                {user.tier === 'premium' && <div className="absolute -top-1 -right-1 bg-amber-500 rounded-full p-0.5"><Crown className="w-2.5 h-2.5 text-white" /></div>}
+            <div className="flex items-center gap-2 pl-1">
+              <div className="relative group cursor-pointer hidden sm:block">
+                <img src={user.avatar} className="w-8 h-8 md:w-9 h-9 rounded-full border-2 border-indigo-500/30 p-0.5" />
               </div>
-              <button onClick={handleLogout} className="p-2.5 text-slate-400 hover:text-red-500 transition-colors"><LogOut className="w-5 h-5" /></button>
+              <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-red-500"><LogOut className="w-5 h-5" /></button>
             </div>
           ) : (
-            <Button onClick={() => setIsAuthModalOpen(true)} className="px-6 py-2.5 rounded-full text-xs font-bold uppercase shadow-indigo-600/20">{t.navLogin}</Button>
+            <Button onClick={() => setIsAuthModalOpen(true)} className="px-4 md:px-6 py-2 md:py-2.5 rounded-full text-[10px] md:text-xs font-bold uppercase">{t.navLogin}</Button>
           )}
         </div>
       </nav>
+
+      {/* Mobile Menu Drawer */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-[100] lg:hidden">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
+          <div className="absolute top-0 left-0 bottom-0 w-3/4 max-w-xs bg-white dark:bg-[#020617] shadow-2xl p-6 animate-in slide-in-from-left duration-300">
+             <div className="flex items-center justify-between mb-8">
+                <div className="flex items-center gap-2">
+                   <Command className="w-6 h-6 text-indigo-600" />
+                   <span className="font-bold">TimorAI</span>
+                </div>
+                <button onClick={() => setIsMobileMenuOpen(false)}><X className="w-6 h-6 text-slate-500" /></button>
+             </div>
+             <div className="space-y-2">
+                {[
+                  { id: 'dashboard', label: t.navDashboard, icon: Globe },
+                  { id: 'builder', label: t.navBuilder, icon: Zap },
+                  { id: 'learn', label: t.navLearn, icon: Folder }
+                ].map(item => (
+                  <button 
+                    key={item.id}
+                    onClick={() => { setActivePage(item.id as any); setIsMobileMenuOpen(false); }}
+                    className={`w-full flex items-center gap-4 p-4 rounded-2xl font-bold transition-all ${activePage === item.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5'}`}
+                  >
+                    <item.icon className="w-5 h-5" />
+                    {item.label}
+                  </button>
+                ))}
+             </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 overflow-hidden">{renderActivePage()}</div>
       <ChatWidget language={language} />
       <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} onLogin={(u) => { setUser(u); localStorage.setItem('timorai_user', JSON.stringify(u)); }} language={language} />
       <PremiumModal isOpen={isPremiumModalOpen} onClose={() => setIsPremiumModalOpen(false)} onUpgrade={() => { if(user) { const u = {...user, tier: 'premium' as const}; setUser(u); localStorage.setItem('timorai_user', JSON.stringify(u)); } setIsPremiumModalOpen(false); }} language={language} />
-      <DeveloperProfileModal isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} language={language} />
     </div>
   );
 };
