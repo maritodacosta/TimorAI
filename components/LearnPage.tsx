@@ -36,17 +36,20 @@ export const LearnPage: React.FC<LearnPageProps> = ({ language }) => {
     setChatHistory(prev => [...prev, userMsg]);
     setIsLoading(true);
     setInput('');
-    setCurrentContent(t.learnLoading);
-
+    // Don't clear content immediately, let user see old content until new one is ready or if error occurs
+    
     try {
-      const response = await learnWithTimorAI(userMsg.text, language, [...chatHistory, userMsg]);
-      setChatHistory(prev => [...prev, { role: 'model', text: response.chatResponse }]);
-      setCurrentContent(response.boardContent);
-      // Auto switch to board on mobile after response
-      if (window.innerWidth < 768) setActiveTab('board');
-    } catch (error) {
-      setChatHistory(prev => [...prev, { role: 'model', text: t.chatError }]);
-      setCurrentContent(t.chatError);
+      const response = await learnWithTimorAI(userMsg.text, language, chatHistory);
+      if (response && response.chatResponse) {
+        setChatHistory(prev => [...prev, { role: 'model', text: response.chatResponse }]);
+        setCurrentContent(response.boardContent);
+        if (window.innerWidth < 768) setActiveTab('board');
+      } else {
+        throw new Error("Invalid response format");
+      }
+    } catch (error: any) {
+      console.error("[LearnPage] Chat Error:", error);
+      setChatHistory(prev => [...prev, { role: 'model', text: `${t.chatError} (${error.message || 'Unknown'})` }]);
     } finally {
       setIsLoading(false);
     }
@@ -103,6 +106,16 @@ export const LearnPage: React.FC<LearnPageProps> = ({ language }) => {
                  </div>
               </div>
             ))}
+            {isLoading && (
+              <div className="flex gap-3 animate-pulse">
+                <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-white/10 flex items-center justify-center shrink-0 mt-1">
+                  <Bot className="w-4 h-4 text-indigo-500" />
+                </div>
+                <div className="bg-gray-100 dark:bg-[#0f172a] rounded-2xl px-4 py-2.5 text-xs text-slate-400">
+                  {t.learnLoading}
+                </div>
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
 
@@ -117,7 +130,7 @@ export const LearnPage: React.FC<LearnPageProps> = ({ language }) => {
                  disabled={isLoading}
                  className="w-full bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 text-slate-900 dark:text-white text-sm rounded-xl py-3 pl-4 pr-12 focus:outline-none"
                />
-               <button onClick={handleSend} className="absolute right-2 p-2 bg-indigo-600 text-white rounded-lg"><Send className="w-4 h-4" /></button>
+               <button onClick={handleSend} disabled={isLoading} className="absolute right-2 p-2 bg-indigo-600 text-white rounded-lg disabled:opacity-50"><Send className="w-4 h-4" /></button>
              </div>
           </div>
         </div>
@@ -135,18 +148,11 @@ export const LearnPage: React.FC<LearnPageProps> = ({ language }) => {
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 md:p-10 font-sans">
-             {isLoading ? (
-               <div className="h-full flex flex-col items-center justify-center text-slate-400">
-                  <RefreshCw className="w-10 h-10 animate-spin text-indigo-500 mb-4" />
-                  <p className="animate-pulse">{t.learnLoading}</p>
+             <article className="prose dark:prose-invert max-w-none">
+               <div className="whitespace-pre-wrap leading-relaxed text-slate-800 dark:text-slate-200 text-sm md:text-base">
+                  {currentContent}
                </div>
-             ) : (
-               <article className="prose dark:prose-invert max-w-none">
-                 <div className="whitespace-pre-wrap leading-relaxed text-slate-800 dark:text-slate-200 text-sm md:text-base">
-                    {currentContent}
-                 </div>
-               </article>
-             )}
+             </article>
           </div>
         </div>
 
