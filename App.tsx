@@ -64,18 +64,6 @@ const App: React.FC = () => {
   const langMenuRef = useRef<HTMLDivElement>(null);
   const t = TRANSLATIONS[language];
 
-  const DAILY_BUILD_LIMIT = 100; 
-
-  const safeBase64 = (str: string) => {
-    try {
-      const bytes = new TextEncoder().encode(str);
-      const binString = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
-      return btoa(binString);
-    } catch (e) {
-      return btoa(unescape(encodeURIComponent(str)));
-    }
-  };
-
   useEffect(() => {
     const storedUser = localStorage.getItem('timorai_user');
     if (storedUser) {
@@ -84,19 +72,47 @@ const App: React.FC = () => {
         if (parsedUser.role === 'admin') setActivePage('admin');
     }
     const storedDB = localStorage.getItem('timorai_users_db');
-    if (storedDB) setAllUsers(JSON.parse(storedDB));
+    if (storedDB) {
+      setAllUsers(JSON.parse(storedDB));
+    } else {
+      const initialUsers: UserType[] = [
+        { id: 'admin-001', name: 'Administrator', email: 'mdc@timor.ai', tier: 'premium', role: 'admin', avatar: 'https://ui-avatars.com/api/?name=Admin+System&background=4338ca&color=fff' },
+        { id: 'user-001', name: 'User 1', email: 'user1@example.com', tier: 'free', role: 'user', avatar: 'https://ui-avatars.com/api/?name=User+One' }
+      ];
+      setAllUsers(initialUsers);
+      localStorage.setItem('timorai_users_db', JSON.stringify(initialUsers));
+    }
+    
     const storedProjects = localStorage.getItem('timorai_projects_db');
     if (storedProjects) setProjects(JSON.parse(storedProjects));
     const savedLang = localStorage.getItem('timorai_pref_lang') as Language;
     if (savedLang) setLanguage(savedLang);
   }, []);
 
+  const handleUpdateUserInDashboard = (updatedUser: UserType) => {
+    const updatedAllUsers = allUsers.map(u => u.id === updatedUser.id ? updatedUser : u);
+    setAllUsers(updatedAllUsers);
+    localStorage.setItem('timorai_users_db', JSON.stringify(updatedAllUsers));
+    if (user && user.id === updatedUser.id) {
+      setUser(updatedUser);
+      localStorage.setItem('timorai_user', JSON.stringify(updatedUser));
+    }
+  };
+
+  const handleDeleteUserInDashboard = (userId: string) => {
+    if (window.confirm(t.deleteConfirm)) {
+      const updatedAllUsers = allUsers.filter(u => u.id !== userId);
+      setAllUsers(updatedAllUsers);
+      localStorage.setItem('timorai_users_db', JSON.stringify(updatedAllUsers));
+    }
+  };
+
   const autoSyncToGithub = async (targetFiles?: ProjectFile[]) => {
     const filesToSync = targetFiles || files;
     if (!user?.githubConnected || !user.githubToken || filesToSync.length === 0) return;
     
     setIsGithubSyncing(true);
-    setSyncMessage("Menyambungkan ke GitHub...");
+    setSyncMessage(t.githubSyncing);
     const REPO_NAME = 'TimorAI-Projects';
     const GITHUB_API = 'https://api.github.com';
     const headers = {
@@ -113,7 +129,6 @@ const App: React.FC = () => {
 
       const repoRes = await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}`, { headers });
       if (repoRes.status === 404) {
-        setSyncMessage("Membuat Repositori...");
         const createRes = await fetch(`${GITHUB_API}/user/repos`, {
           method: 'POST',
           headers: { ...headers, 'Content-Type': 'application/json' },
@@ -129,7 +144,6 @@ const App: React.FC = () => {
       }
 
       for (const file of filesToSync) {
-        setSyncMessage(`Push: ${file.name}...`);
         const fileCheck = await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}/contents/${file.name}`, { headers });
         let sha = null;
         if (fileCheck.status === 200) {
@@ -137,12 +151,12 @@ const App: React.FC = () => {
           sha = checkData.sha;
         }
 
-        const pushRes = await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}/contents/${file.name}`, {
+        await fetch(`${GITHUB_API}/repos/${owner}/${REPO_NAME}/contents/${file.name}`, {
           method: 'PUT',
           headers: { ...headers, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message: `Update TimorAI: ${file.name}`,
-            content: safeBase64(file.content),
+            content: btoa(unescape(encodeURIComponent(file.content))),
             sha: sha || undefined
           })
         });
@@ -150,10 +164,10 @@ const App: React.FC = () => {
       
       const repoUrl = `https://github.com/${owner}/${REPO_NAME}`;
       setLastRepoUrl(repoUrl);
-      setSyncMessage("SINKRONISASI BERHASIL!");
+      setSyncMessage(t.githubPushSuccess);
       setTimeout(() => setSyncMessage(""), 4000);
     } catch (error: any) {
-      setSyncMessage(`Error: ${error.message}`);
+      setSyncMessage(t.githubPushError);
     } finally {
       setIsGithubSyncing(false);
     }
@@ -165,7 +179,7 @@ const App: React.FC = () => {
         await autoSyncToGithub();
         return;
     }
-    const token = window.prompt("Masukkan GitHub Personal Access Token Anda:", user.githubToken || "");
+    const token = window.prompt(t.githubTokenPrompt, user.githubToken || "");
     if (!token) return;
     setIsGithubSyncing(true);
     try {
@@ -174,10 +188,11 @@ const App: React.FC = () => {
       const updatedUser = { ...user, githubConnected: true, githubToken: token, tier: 'premium' as const };
       setUser(updatedUser);
       localStorage.setItem('timorai_user', JSON.stringify(updatedUser));
-      alert("GitHub Berhasil Terhubung!");
+      handleUpdateUserInDashboard(updatedUser);
+      alert(t.githubConnectSuccess);
       if (files.length > 0) await autoSyncToGithub();
     } catch (e: any) {
-      alert(`Error: ${e.message}`);
+      alert(t.githubPushError);
     } finally {
       setIsGithubSyncing(false);
     }
@@ -234,7 +249,15 @@ const App: React.FC = () => {
   const handleLanguageChange = (l: Language) => { setLanguage(l); localStorage.setItem('timorai_pref_lang', l); setIsLangMenuOpen(false); };
 
   const renderActivePage = () => {
-    if (activePage === 'admin' && user?.role === 'admin') return <AdminDashboard language={language} users={allUsers} onUpdateUser={()=>{}} onDeleteUser={()=>{}} onLogout={handleLogout} />;
+    if (activePage === 'admin' && user?.role === 'admin') return (
+      <AdminDashboard 
+        language={language} 
+        users={allUsers} 
+        onUpdateUser={handleUpdateUserInDashboard} 
+        onDeleteUser={handleDeleteUserInDashboard} 
+        onLogout={handleLogout} 
+      />
+    );
     switch (activePage) {
       case 'dashboard': return <DashboardPage language={language} onNavigate={(p: any) => setActivePage(p)} />;
       case 'learn': return <LearnPage language={language} />;
@@ -302,7 +325,7 @@ const App: React.FC = () => {
               <div className="flex items-center gap-3">
                 {files.length > 0 && (
                   <>
-                    <Button variant="ghost" onClick={handleGithubConnect} isLoading={isGithubSyncing} className={`h-9 px-4 rounded-lg ${user?.githubConnected ? 'text-emerald-500 bg-emerald-500/5' : ''}`}><Github className="w-4 h-4 mr-2" /> {user?.githubConnected ? "Linked" : "Sync"}</Button>
+                    <Button variant="ghost" onClick={handleGithubConnect} isLoading={isGithubSyncing} className={`h-9 px-4 rounded-lg ${user?.githubConnected ? 'text-emerald-500 bg-emerald-500/5' : ''}`}><Github className="w-4 h-4 mr-2" /> {user?.githubConnected ? t.btnGithubConnected : t.btnGithub}</Button>
                     <Button variant="secondary" onClick={handleSaveProject} className="h-9 px-4 rounded-lg"><Save className="w-4 h-4 mr-2" /> {t.btnSave}</Button>
                   </>
                 )}
@@ -313,14 +336,14 @@ const App: React.FC = () => {
                 <div className="w-full h-full p-4 flex justify-center bg-slate-100/50 dark:bg-black/40"><PreviewFrame html={previewHtml} title="TimorAI Preview" device={device} /></div>
               ) : (
                 <div className="flex h-full">
-                  <FileExplorer files={files} activeFile={activeFile} onSelectFile={(name) => { setActiveFile(name); }} title="Project Files" />
+                  <FileExplorer files={files} activeFile={activeFile} onSelectFile={(name) => { setActiveFile(name); }} title={t.explorerTitle} />
                   <div className="flex-1 h-full overflow-hidden"><CodeEditor code={files.find(f => f.name === activeFile)?.content || ''} /></div>
                 </div>
               )}
               {status === GenerationStatus.LOADING && (
                 <div className="absolute inset-0 bg-white/95 dark:bg-[#020617]/95 backdrop-blur-xl flex flex-col items-center justify-center z-50">
                   <div className="w-16 h-16 relative mb-6"><RefreshCw className="w-full h-full text-indigo-500 animate-spin" /><div className="absolute inset-0 flex items-center justify-center"><Zap className="w-6 h-6 text-indigo-500 fill-current animate-pulse" /></div></div>
-                  <p className="text-xl font-display font-bold text-slate-900 dark:text-white mb-2">Membangun Mahakarya...</p>
+                  <p className="text-xl font-display font-bold text-slate-900 dark:text-white mb-2">{t.buildMasterpiece}</p>
                 </div>
               )}
             </div>
@@ -334,7 +357,6 @@ const App: React.FC = () => {
     <div className={`min-h-screen flex flex-col ${theme === 'dark' ? 'dark bg-[#020617] text-white' : 'bg-[#f8fafc] text-slate-900'}`}>
       <nav className="h-16 border-b border-gray-200 dark:border-white/5 flex items-center justify-between px-4 md:px-6 sticky top-0 bg-white/80 dark:bg-[#020617]/80 backdrop-blur-xl z-[60]">
         <div className="flex items-center gap-3 md:gap-6">
-          {/* Mobile Menu Toggle */}
           <button 
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
             className="p-2 lg:hidden text-slate-500 hover:text-indigo-600 transition-colors"
@@ -348,7 +370,7 @@ const App: React.FC = () => {
             </div>
             <div className="flex flex-col">
               <span className="text-lg md:text-xl font-display font-bold tracking-tight">Timor<span className="text-indigo-600 dark:text-indigo-400">AI</span></span>
-              <span className="text-[10px] md:text-[8px] font-bold uppercase tracking-[0.2em] opacity-60">Enterprise</span>
+              <span className="text-[10px] md:text-[9px] font-bold uppercase tracking-[0.2em] opacity-60">{t.enterpriseText}</span>
             </div>
           </div>
 
@@ -377,7 +399,7 @@ const App: React.FC = () => {
           </button>
           {user ? (
             <div className="flex items-center gap-2 pl-1">
-              <div className="relative group cursor-pointer hidden sm:block">
+              <div className="relative group cursor-pointer hidden sm:block" onClick={() => setActivePage('dashboard')}>
                 <img src={user.avatar} className="w-8 h-8 md:w-9 h-9 rounded-full border-2 border-indigo-500/30 p-0.5" />
               </div>
               <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-red-500"><LogOut className="w-5 h-5" /></button>
@@ -388,7 +410,6 @@ const App: React.FC = () => {
         </div>
       </nav>
 
-      {/* Mobile Menu Drawer */}
       {isMobileMenuOpen && (
         <div className="fixed inset-0 z-[100] lg:hidden">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
@@ -396,7 +417,10 @@ const App: React.FC = () => {
              <div className="flex items-center justify-between mb-8">
                 <div className="flex items-center gap-2">
                    <Command className="w-6 h-6 text-indigo-600" />
-                   <span className="font-bold">TimorAI</span>
+                   <div className="flex flex-col">
+                     <span className="font-bold">TimorAI</span>
+                     <span className="text-[8px] font-bold uppercase opacity-50">{t.enterpriseText}</span>
+                   </div>
                 </div>
                 <button onClick={() => setIsMobileMenuOpen(false)}><X className="w-6 h-6 text-slate-500" /></button>
              </div>
@@ -422,8 +446,8 @@ const App: React.FC = () => {
 
       <div className="flex-1 overflow-hidden">{renderActivePage()}</div>
       <ChatWidget language={language} />
-      <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} onLogin={(u) => { setUser(u); localStorage.setItem('timorai_user', JSON.stringify(u)); }} language={language} />
-      <PremiumModal isOpen={isPremiumModalOpen} onClose={() => setIsPremiumModalOpen(false)} onUpgrade={() => { if(user) { const u = {...user, tier: 'premium' as const}; setUser(u); localStorage.setItem('timorai_user', JSON.stringify(u)); } setIsPremiumModalOpen(false); }} language={language} />
+      <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} onLogin={(u) => { setUser(u); localStorage.setItem('timorai_user', JSON.stringify(u)); handleUpdateUserInDashboard(u); }} language={language} />
+      <PremiumModal isOpen={isPremiumModalOpen} onClose={() => setIsPremiumModalOpen(false)} onUpgrade={() => { if(user) { const u = {...user, tier: 'premium' as const}; setUser(u); localStorage.setItem('timorai_user', JSON.stringify(u)); handleUpdateUserInDashboard(u); } setIsPremiumModalOpen(false); }} language={language} />
     </div>
   );
 };
