@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { X, Mail, Lock, User, ArrowRight, Loader } from 'lucide-react';
 import { Language, User as UserType } from '../types';
@@ -23,7 +24,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, 
     e.preventDefault();
     setLoading(true);
 
-    // Hardcoded Admin Logic
     if (mode === 'login' && formData.email === 'mdc@timor.ai' && formData.password === 'TimorAI@admin792715') {
        setTimeout(() => {
           const adminUser: UserType = {
@@ -44,13 +44,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, 
        return;
     }
 
-    // Standard User Simulation
     setTimeout(() => {
       const mockUser: UserType = {
         id: Date.now().toString(),
         name: mode === 'register' ? formData.name : 'Timor Developer',
         email: formData.email,
-        tier: 'free', // Default tier is free
+        tier: 'free',
         role: 'user',
         avatar: `https://ui-avatars.com/api/?name=${mode === 'register' ? formData.name : 'Timor Developer'}&background=4338ca&color=fff`,
         joinedAt: Date.now(),
@@ -68,7 +67,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, 
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-300">
       <div className="bg-white dark:bg-[#1e293b] border border-gray-200 dark:border-white/10 rounded-3xl shadow-2xl w-full max-w-md relative overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col">
         
-        {/* Decorative BG */}
         <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
         <div className="absolute bottom-0 left-0 w-32 h-32 bg-violet-500/10 rounded-full blur-3xl translate-y-1/2 -translate-x-1/2"></div>
 
@@ -84,7 +82,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLogin, 
              {mode === 'login' ? t.authLogin : t.authRegister}
            </h2>
            <p className="text-sm text-slate-500 dark:text-slate-400 text-center mb-8">
-             {mode === 'login' ? 'Welcome back to TimorAI' : 'Join the digital revolution'}
+             {mode === 'login' ? t.authWelcome : t.authJoin}
            </p>
 
            <form onSubmit={handleSubmit} className="space-y-4">
