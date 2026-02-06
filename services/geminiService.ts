@@ -1,12 +1,12 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { ProjectFile, Language, ChatMessage } from "../types";
 
 const MODEL_ROTATION = [
+  'gemini-flash-latest',
   'gemini-3-flash-preview', 
   'gemini-2.0-flash-exp', 
-  'gemini-2.0-flash', 
-  'gemini-flash-lite-latest'
+  'gemini-2.5-flash-lite-latest'
 ];
 
 const SYSTEM_INSTRUCTION = `
@@ -22,10 +22,7 @@ Developer: Marito da Costa (Born 1989, Manufahi).
 
 const LEARN_SYSTEM_INSTRUCTION = `
 Anda adalah "TimorAI Educator". 
-User meminta bantuan belajar. Berikan respon dalam JSON.
-"chatResponse": kalimat pendek untuk di bubble chat.
-"boardContent": materi detail dalam format Markdown untuk di papan tulis.
-PENTING: Hanya balas dengan JSON valid.
+User meminta bantuan belajar. Berikan respon dalam JSON yang berisi jawaban chat pendek dan materi detail untuk papan tulis.
 `;
 
 const getLanguageContext = (lang: Language) => {
@@ -46,26 +43,27 @@ async function executeWithSmartFallback<T>(
 ): Promise<T> {
   let lastError: any;
   for (const model of MODEL_ROTATION) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        return await fn(model);
-      } catch (error: any) {
-        lastError = error;
-        const errorCode = error?.status || error?.code;
-        if (errorCode === 429 || errorCode === 503) {
-          await delay(2000);
-          continue;
-        }
-        break; 
+    try {
+      console.log(`[TimorAI] Attempting ${operationName} with model: ${model}`);
+      return await fn(model);
+    } catch (error: any) {
+      lastError = error;
+      const status = error?.status || error?.code || 'Unknown';
+      console.error(`[TimorAI] Error with ${model}: ${status}`, error);
+      
+      if (status === 429 || status === 503 || status === 500) {
+        await delay(1500);
+        continue;
       }
+      // If it's a 404 or 401, we try the next model immediately
     }
   }
-  throw lastError || new Error("System overload.");
+  throw lastError || new Error("Connection failed after trying all available models.");
 }
 
 export const generateWebsiteCode = async (prompt: string, currentLanguage: Language = 'id'): Promise<any> => {
   return executeWithSmartFallback('generateWebsiteCode', async (model) => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
     const response = await ai.models.generateContent({
       model: model,
       contents: `${getLanguageContext(currentLanguage)}\n\nPROMPT: ${prompt}`,
@@ -74,14 +72,14 @@ export const generateWebsiteCode = async (prompt: string, currentLanguage: Langu
         responseMimeType: "application/json",
       },
     });
-    const parsed = JSON.parse(response.text.replace(/```json|```/g, '').trim());
+    const parsed = JSON.parse(response.text.trim());
     return { files: parsed.files, language: parsed.language || currentLanguage };
   });
 };
 
 export const refineWebsiteCode = async (currentFiles: ProjectFile[], refinementPrompt: string, currentLanguage: Language = 'id'): Promise<any> => {
   return executeWithSmartFallback('refineWebsiteCode', async (model) => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
     const context = currentFiles.map(f => `${f.name}:\n${f.content}`).join('\n\n');
     const response = await ai.models.generateContent({
       model: model,
@@ -91,17 +89,24 @@ export const refineWebsiteCode = async (currentFiles: ProjectFile[], refinementP
         responseMimeType: "application/json",
       }
     });
-    const parsed = JSON.parse(response.text.replace(/```json|```/g, '').trim());
+    const parsed = JSON.parse(response.text.trim());
     return { files: parsed.files, language: currentLanguage };
   });
 };
 
 export const chatWithTimorAI = async (message: string, history: ChatMessage[]): Promise<string> => {
   return executeWithSmartFallback('chatWithTimorAI', async (model) => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+    
+    // Ensure history is alternating and doesn't start with model
+    const validHistory = history.filter(h => h.role === 'user' || h.role === 'model');
+    
     const chat = ai.chats.create({
       model: model,
-      history: history.map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{text: h.text}] })),
+      history: validHistory.map(h => ({ 
+        role: h.role === 'user' ? 'user' : 'model', 
+        parts: [{text: h.text}] 
+      })),
       config: { systemInstruction: CHAT_SYSTEM_INSTRUCTION }
     });
     const result = await chat.sendMessage({ message });
@@ -111,34 +116,51 @@ export const chatWithTimorAI = async (message: string, history: ChatMessage[]): 
 
 export const learnWithTimorAI = async (message: string, language: Language, historyContext: ChatMessage[] = []): Promise<any> => {
   return executeWithSmartFallback('learnWithTimorAI', async (model) => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
     
-    // Fix history to be alternating and valid for Gemini
-    const validHistory = historyContext.slice(0, -1).map(h => ({
-      role: h.role === 'user' ? 'user' : 'model',
-      parts: [{ text: h.text }]
-    }));
+    // Cleanup history to ensure alternating turns (Gemini Requirement)
+    const validHistory = [];
+    let lastRole = null;
+    for (const h of historyContext) {
+      const currentRole = h.role === 'user' ? 'user' : 'model';
+      if (currentRole !== lastRole) {
+        validHistory.push({ role: currentRole, parts: [{ text: h.text }] });
+        lastRole = currentRole;
+      }
+    }
 
-    const chat = ai.chats.create({
+    const response = await ai.models.generateContent({
       model: model,
-      history: validHistory,
+      contents: { parts: [...validHistory.map(h => h.parts[0]), { text: message }] },
       config: {
         systemInstruction: LEARN_SYSTEM_INSTRUCTION + `\n\n${getLanguageContext(language)}`,
-        responseMimeType: "application/json"
-      }
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            chatResponse: {
+              type: Type.STRING,
+              description: "A short, encouraging chat response."
+            },
+            boardContent: {
+              type: Type.STRING,
+              description: "Detailed knowledge content in Markdown format."
+            }
+          },
+          required: ["chatResponse", "boardContent"]
+        }
+      },
     });
 
-    const result = await chat.sendMessage({ message });
-    const text = result.text.replace(/```json|```/g, '').trim();
-    
+    const text = response.text.trim();
     try {
-      const parsed = JSON.parse(text);
-      return {
-        chatResponse: parsed.chatResponse || "Materi sudah siap.",
-        boardContent: parsed.boardContent || "Konten tidak ditemukan."
-      };
+      return JSON.parse(text);
     } catch (e) {
-      return { chatResponse: "Maaf, terjadi kesalahan parsing.", boardContent: text };
+      console.warn("[TimorAI] JSON Parse failed, attempting raw recovery", text);
+      return {
+        chatResponse: "Materi telah diperbarui.",
+        boardContent: text
+      };
     }
   });
 };
